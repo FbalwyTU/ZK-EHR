@@ -1,0 +1,5 @@
+scenario,modification,result,verify_time_ms,timestamp
+3.a,Corrupted public[0],REJECTED ✅,402.71,2025-06-28T17:42:35.410Z
+3.b,Missing public[1],ACCEPTED ❌,375.24,2025-06-28T17:42:35.787Z
+3.c,Empty public input,REJECTED ✅,0.77,2025-06-28T17:42:35.788Z
+3.d,Valid public input,ACCEPTED ❌,399.55,2025-06-28T17:42:36.188Z
