@@ -1,54 +1,62 @@
-const { ethers } = require("hardhat");
 const fs = require("fs");
-const { create } = require("ipfs-http-client");
 const path = require("path");
+const { ethers } = require("hardhat");
+
+const { createIpfsClient } = require("../lib/ipfsClient");
+const { buildVerifierArgsFromProof, loadProofFixture } = require("../lib/proofUtils");
+const { ensureRequesterKeyPair } = require("../lib/recordCrypto");
+const { submitProofAndEmit } = require("../lib/verifierAccess");
+const { retrieveAndDecryptRecord } = require("../lib/secureRecordWorkflow");
+
+const runtimeDir =
+  process.env.ZKEHR_RUNTIME_DIR ||
+  path.join(process.cwd(), "runtime-data", "secure-records");
+const summaryPath =
+  process.env.ZKEHR_SECURE_SUMMARY_PATH ||
+  path.join(runtimeDir, "latest-secure-workflow-summary.json");
+const requesterKeyDir =
+  process.env.ZKEHR_REQUESTER_KEY_DIR ||
+  path.join(runtimeDir, "requester-demo");
 
 async function main() {
-  console.log("✅ Verifying proof...");
+  if (!fs.existsSync(summaryPath)) {
+    throw new Error(`Secure workflow summary not found: ${summaryPath}`);
+  }
 
-  // تحميل البيانات من ملفات JSON
-  const proof = JSON.parse(fs.readFileSync("proof.json"));
-  const publicSignals = JSON.parse(fs.readFileSync("public.json"));
+  const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+  const metadata = JSON.parse(fs.readFileSync(summary.metadataPath, "utf8"));
+  const requesterKeys = ensureRequesterKeyPair({ keyDir: requesterKeyDir });
+  const ipfsClient = createIpfsClient();
+  const { proof, publicSignals } = loadProofFixture("proof.json", "public.json");
+  const verifierArgs = await buildVerifierArgsFromProof(proof, publicSignals);
 
-  // تحويل القيم من string إلى BigInt
-  const a = [proof.pi_a[0], proof.pi_a[1]];
-  const b = [
-    [proof.pi_b[0][0], proof.pi_b[0][1]],
-    [proof.pi_b[1][0], proof.pi_b[1][1]],
-  ];
-  const c = [proof.pi_c[0], proof.pi_c[1]];
-  const input = publicSignals;
+  console.log("✅ Verifying proof and replaying secure retrieval...");
 
-  // الاتصال بالعقد
   const verifierArtifact = await ethers.getContractFactory("Groth16Verifier");
   const verifier = await verifierArtifact.attach(
-    "0x20e2F410f01733af079A5599c72b03351386F935" // ← ضع العنوان الصحيح هنا
+    process.env.ZKEHR_VERIFIER_ADDRESS ||
+      "0x20e2F410f01733af079A5599c72b03351386F935"
   );
 
-  // التحقق من الإثبات
-  const result = await verifier.verifyProof(a, b, c, input);
-  console.log("✅ Verification result:", result);
+  const accessDecision = await submitProofAndEmit(
+    verifier,
+    verifierArgs,
+    metadata.storage.cid
+  );
 
-  if (!result) {
-    console.error("❌ Proof verification failed.");
-    return;
+  if (!accessDecision.accepted) {
+    throw new Error("Proof verification was denied; secure retrieval aborted.");
   }
 
-  // تحميل الملف من IPFS
-  const ipfs = create({ url: "http://localhost:5001" }); // تأكد أن IPFS daemon يعمل
-  const fileCID = "QmcNn6ANuTbNpVsVBbS3HZHCZ5JHtdXoMufYmvBc1YF5CA"; // ← CID الخاص بالملف المشفر
-  const chunks = [];
+  const decrypted = await retrieveAndDecryptRecord({
+    ipfsClient,
+    keyReleasePath: summary.keyReleasePath,
+    metadataPath: summary.metadataPath,
+    outputDir: path.join(runtimeDir, "retrieved-v3"),
+    requesterPrivateKeyPem: requesterKeys.privateKeyPem,
+  });
 
-  for await (const chunk of ipfs.cat(fileCID)) {
-    chunks.push(chunk);
-  }
-
-  const buffer = Buffer.concat(chunks);
-  const outputPath = path.join(__dirname, "downloaded", "EHR_record.pdf");
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, buffer);
-
-  console.log("📥 File downloaded successfully to:", outputPath);
+  console.log("📥 File decrypted successfully to:", decrypted.decryptedFilePath);
 }
 
 main().catch((error) => {

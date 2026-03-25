@@ -1,8 +1,12 @@
 const fs = require("fs");
 const { performance } = require("perf_hooks");
-const { create } = require("ipfs-http-client");
+const { createIpfsClient } = require("../lib/ipfsClient");
+const {
+  encryptFileBuffer,
+  generateRecordKey,
+} = require("../lib/recordCrypto");
 
-const ipfs = create({ url: "http://localhost:5001" });
+const ipfs = createIpfsClient();
 
 const outputCsv = "evaluation/upload_scalability.csv";
 const fileList = [
@@ -13,7 +17,8 @@ const fileList = [
 ];
 
 // إنشاء الملف إذا لم يوجد
-const header = "file_type,upload_time_ms,cid,success,timestamp";
+const header =
+  "file_type,upload_time_ms,cid,success,plaintext_bytes,ciphertext_bytes,timestamp";
 if (!fs.existsSync(outputCsv)) {
   fs.writeFileSync(outputCsv, header + "\n");
 }
@@ -28,13 +33,14 @@ if (!fs.existsSync(outputCsv)) {
     }
 
     const buffer = fs.readFileSync(file.path);
+    const encrypted = encryptFileBuffer(buffer, generateRecordKey());
 
     const t0 = performance.now();
     let cid = "";
     let success = false;
 
     try {
-      const result = await ipfs.add(buffer);
+      const result = await ipfs.add(encrypted.ciphertext);
       cid = result.cid.toString();
       success = true;
     } catch (err) {
@@ -49,6 +55,8 @@ if (!fs.existsSync(outputCsv)) {
       timeTaken,
       cid,
       success,
+      buffer.length,
+      encrypted.ciphertext.length,
       new Date().toISOString(),
     ].join(",");
 
